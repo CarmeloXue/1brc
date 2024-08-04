@@ -7,20 +7,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
-
-func main() {
-
-	file, err := os.Open("../../../../data/weather_stations.csv")
-	defer file.Close()
-	if err != nil {
-		fmt.Println("get errors: %v", err)
-	}
-
-	simpleProcess(file)
-
-}
 
 type WeatherStations struct {
 	Min   float64
@@ -28,6 +17,67 @@ type WeatherStations struct {
 	Count int
 	Total float64
 	Avg   float64
+}
+
+func main() {
+
+	// read file
+	file, err := os.Open("../../../../data/measurements.txt")
+	defer file.Close()
+	if err != nil {
+		fmt.Println("get errors: %v", err)
+	}
+
+	fileState, err := file.Stat()
+	if err != nil {
+		fmt.Println("get errors: %v", err)
+	}
+
+	var (
+		processerCount = 100
+		chunkSizeMB    = 32 * 1024 * 1024
+		offsetCh       = make(chan int, processerCount)                        // put start point here
+		parsedWS       = make(chan map[string]WeatherStations, processerCount) // put parsed data here
+	)
+
+	// send start points to offset channel
+	go func() {
+		i := 0
+		for i < int(fileState.Size()) {
+			offsetCh <- i
+			i += chunkSizeMB
+		}
+		close(offsetCh)
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(processerCount)
+
+	// create goroutine to parse files
+	for i := 0; i < processerCount; i++ {
+		go func() {
+			for offset := range offsetCh {
+				parsedWS <- parseFileAtOffset(file, int64(offset))
+			}
+			wg.Done()
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(parsedWS)
+	}()
+
+	// merge to a map
+	for parsed := range parsedWS {
+
+	}
+	// simpleProcess(file)
+
+}
+
+func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
+
 }
 
 func simpleProcess(file *os.File) {
