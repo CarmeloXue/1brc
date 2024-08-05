@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -19,10 +20,12 @@ type WeatherStations struct {
 	Avg   float64
 }
 
+var defaultOffset int64 = 100 // read some more bytes for next line
+
 func main() {
 
 	// read file
-	file, err := os.Open("../../../../data/measurements.txt")
+	file, err := os.Open("../../../../data/weather_stations.csv")
 	defer file.Close()
 	if err != nil {
 		fmt.Println("get errors: %v", err)
@@ -32,10 +35,9 @@ func main() {
 	if err != nil {
 		fmt.Println("get errors: %v", err)
 	}
-
 	var (
 		processerCount = 100
-		chunkSizeMB    = 32 * 1024 * 1024
+		chunkSizeMB    = 1024 * 128
 		offsetCh       = make(chan int, processerCount)                        // put start point here
 		parsedWS       = make(chan map[string]WeatherStations, processerCount) // put parsed data here
 	)
@@ -43,6 +45,7 @@ func main() {
 	// send start points to offset channel
 	go func() {
 		i := 0
+		fmt.Println("file Size: ", fileState.Size(), "chunk size: ", chunkSizeMB)
 		for i < int(fileState.Size()) {
 			offsetCh <- i
 			i += chunkSizeMB
@@ -70,14 +73,101 @@ func main() {
 
 	// merge to a map
 	for parsed := range parsedWS {
-
+		fmt.Println(parsed)
 	}
 	// simpleProcess(file)
 
 }
 
 func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
+	fmt.Println("start at offset: ", offset)
+	buf := make([]byte, offset+defaultOffset)
 
+	n, err := file.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		panic(fmt.Sprintf("read from offset: %v has error: %v", offset, err))
+	}
+	fmt.Println("read file length: ", n)
+	if len(buf) == 0 {
+		return map[string]WeatherStations{}
+	}
+	var start int64
+	// skip first line for none first chunk
+	if offset != 0 {
+		var ch string
+		for ch != "\n" {
+			start++
+			ch = string(buf[start])
+		}
+		start++
+	}
+
+	var (
+		isCity     = true
+		wsMap      = make(map[string]WeatherStations)
+		sb         strings.Builder
+		cityName   string
+		tempString string
+	)
+
+	// start to process
+	for start < int64(n) {
+		if isCity {
+			// for loop to read chars to get a city name, stop when meet ';' and set value flag
+			ch := string(buf[start])
+			for ch != ";" {
+				sb.WriteString(ch)
+				start++
+				ch = string(buf[start])
+			}
+
+			isCity = false
+			cityName = sb.String()
+			sb.Reset()
+			start++
+		} else {
+			// for loop to read chars to get a temperature, stop when meet '\n'
+			ch := string(buf[start])
+			for ch != "\n" {
+				sb.WriteString(ch)
+				start++
+				ch = string(buf[start])
+			}
+			isCity = true
+			tempString = sb.String()
+			sb.Reset()
+			tempFloat, err := strconv.ParseFloat(tempString, 64)
+			if err != nil {
+				panic(err)
+			}
+			// set city to map
+			city, ok := wsMap[cityName]
+			if !ok {
+				wsMap[cityName] = WeatherStations{
+					Min:   tempFloat,
+					Max:   tempFloat,
+					Total: tempFloat,
+					Count: 1,
+				}
+			} else {
+				if tempFloat > city.Max {
+					city.Max = tempFloat
+				} else if tempFloat < city.Min {
+					city.Min = tempFloat
+				}
+				city.Total += tempFloat
+				city.Count++
+				city.Avg = city.Total / float64(city.Count)
+			}
+
+			cityName = ""
+			tempString = ""
+			start++
+		}
+
+	}
+
+	return wsMap
 }
 
 func simpleProcess(file *os.File) {
