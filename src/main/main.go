@@ -20,7 +20,12 @@ type WeatherStations struct {
 	Avg   float64
 }
 
-var defaultOffset int64 = 100 // read some more bytes for next line
+var (
+	smallFile = "../../data/weather_stations.csv"
+	largeFile = "../../data/measurements.txt"
+)
+
+var defaultOffset int64 = 128 // read some more bytes for next line
 
 func main() {
 	start := time.Now()
@@ -29,19 +34,20 @@ func main() {
 	}()
 
 	// read file
-	file, err := os.Open("../../../../data/weather_stations.csv")
+	file, err := os.Open(smallFile)
 	defer file.Close()
 	if err != nil {
-		fmt.Println("get errors: %v", err)
+		fmt.Printf("get errors: %v\n", err)
 	}
 
 	fileState, err := file.Stat()
 	if err != nil {
-		fmt.Println("get errors: %v", err)
+		fmt.Printf("get errors: %v\n", err)
 	}
 	var (
+		mb             = 1024 * 1024
 		processerCount = 100
-		chunkSizeMB    = 1024 * 128
+		chunkSizeMB    = 1 * mb / 128
 		offsetCh       = make(chan int, processerCount)                        // put start point here
 		parsedWS       = make(chan map[string]WeatherStations, processerCount) // put parsed data here
 	)
@@ -63,7 +69,7 @@ func main() {
 	for i := 0; i < processerCount; i++ {
 		go func() {
 			for offset := range offsetCh {
-				parsedWS <- parseFileAtOffset(file, int64(offset))
+				parsedWS <- parseFileAtOffset(file, int64(offset), int64(chunkSizeMB))
 			}
 			wg.Done()
 		}()
@@ -73,30 +79,26 @@ func main() {
 		wg.Wait()
 		close(parsedWS)
 	}()
-
+	wholeCounts := 0
 	// merge to a map
-	var wholeMap map[string]WeatherStations
+	var wholeMap = map[string]WeatherStations{}
 	for parsed := range parsedWS {
-		if wholeMap == nil {
-			wholeMap = parsed
-		} else {
-			for k, v := range parsed {
-				wholeValue, exist := wholeMap[k]
-				if !exist {
-					wholeMap[k] = v
-				} else {
-					if v.Min < wholeValue.Min {
-						wholeValue.Min = v.Min
-					}
-
-					if v.Max > wholeValue.Max {
-						wholeValue.Max = v.Max
-					}
-
-					wholeValue.Total += v.Total
-					wholeValue.Count += v.Count
-					wholeValue.Avg = wholeValue.Total / float64(wholeValue.Count)
+		for k, v := range parsed {
+			wholeValue, exist := wholeMap[k]
+			if !exist {
+				wholeMap[k] = v
+			} else {
+				if v.Min < wholeValue.Min {
+					wholeValue.Min = v.Min
 				}
+
+				if v.Max > wholeValue.Max {
+					wholeValue.Max = v.Max
+				}
+
+				wholeValue.Total += v.Total
+				wholeValue.Count += v.Count
+				// wholeValue.Avg = wholeValue.Total / float64(wholeValue.Count)
 			}
 		}
 	}
@@ -107,15 +109,14 @@ func main() {
 		counts++
 	}
 
-	fmt.Println("total:", counts)
+	fmt.Println("total:", counts, "whole counts: ", wholeCounts)
 
-	simpleProcess(file)
+	// simpleProcess(file)
 
 }
 
-func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
-	fmt.Println("start at offset: ", offset)
-	buf := make([]byte, offset+defaultOffset)
+func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]WeatherStations {
+	buf := make([]byte, chunkSize+defaultOffset)
 
 	n, err := file.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
@@ -135,13 +136,12 @@ func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
 		var ch string
 		for start < int64(n) {
 			ch = string(buf[start])
-			if ch != "\n" {
+			if ch == "\n" {
 				start++
-			} else {
 				break
 			}
+			start++
 		}
-		start++
 	}
 
 	var (
@@ -152,8 +152,7 @@ func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
 		tempString string
 	)
 
-	// start to process
-	for start < int64(n) {
+	for {
 		if isCity {
 			// for loop to read chars to get a city name, stop when meet ';' and set value flag
 			for start < int64(n) {
@@ -197,7 +196,7 @@ func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
 						}
 						city.Total += tempFloat
 						city.Count++
-						city.Avg = city.Total / float64(city.Count)
+						// city.Avg = city.Total / float64(city.Count)
 					}
 					cityName = ""
 					tempString = ""
@@ -210,7 +209,10 @@ func parseFileAtOffset(file *os.File, offset int64) map[string]WeatherStations {
 				}
 				start++
 			}
+		}
 
+		if (isCity && start >= chunkSize) || start >= int64(n) {
+			break
 		}
 	}
 
