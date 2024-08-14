@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ type WeatherStations struct {
 var (
 	smallFile = "../../data/weather_stations.csv"
 	largeFile = "../../data/measurements.txt"
+	line_1    = "../../data/1line.csv"
 )
 
 var defaultOffset int64 = 128 // read some more bytes for next line
@@ -33,8 +35,22 @@ func main() {
 		fmt.Println("execution time: ", time.Since(start))
 	}()
 
+	{
+		f, err := os.Create("./profile/cpu.profile")
+		if err != nil {
+			fmt.Println("cannot create cpu profile: ", err)
+			return
+		}
+		defer f.Close()
+		err = pprof.StartCPUProfile(f)
+		if err != nil {
+			fmt.Println("cannot profile cpu: ", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	// read file
-	file, err := os.Open(smallFile)
+	file, err := os.Open(largeFile)
 	defer file.Close()
 	if err != nil {
 		fmt.Printf("get errors: %v\n", err)
@@ -47,7 +63,7 @@ func main() {
 	var (
 		mb             = 1024 * 1024
 		processerCount = 100
-		chunkSizeMB    = 1 * mb / 128
+		chunkSizeMB    = 16 * mb
 		offsetCh       = make(chan int, processerCount)                        // put start point here
 		parsedWS       = make(chan map[string]WeatherStations, processerCount) // put parsed data here
 	)
@@ -69,7 +85,8 @@ func main() {
 	for i := 0; i < processerCount; i++ {
 		go func() {
 			for offset := range offsetCh {
-				parsedWS <- parseFileAtOffset(file, int64(offset), int64(chunkSizeMB))
+				buf := make([]byte, int64(chunkSizeMB)+defaultOffset)
+				parsedWS <- parseFileAtOffset(file, buf, int64(offset), int64(chunkSizeMB))
 			}
 			wg.Done()
 		}()
@@ -79,7 +96,6 @@ func main() {
 		wg.Wait()
 		close(parsedWS)
 	}()
-	wholeCounts := 0
 	// merge to a map
 	var wholeMap = map[string]WeatherStations{}
 	for parsed := range parsedWS {
@@ -98,33 +114,17 @@ func main() {
 
 				wholeValue.Total += v.Total
 				wholeValue.Count += v.Count
-				// wholeValue.Avg = wholeValue.Total / float64(wholeValue.Count)
+				wholeValue.Avg = wholeValue.Total / float64(wholeValue.Count)
 			}
 		}
 	}
 
-	counts := 0
-
-	for _ = range wholeMap {
-		counts++
-	}
-
-	fmt.Println("total:", counts, "whole counts: ", wholeCounts)
-
-	// simpleProcess(file)
-
 }
 
-func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]WeatherStations {
-	buf := make([]byte, chunkSize+defaultOffset)
-
+func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64) map[string]WeatherStations {
 	n, err := file.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
 		panic(fmt.Sprintf("read from offset: %v has error: %v", offset, err))
-	}
-
-	if n == 100 {
-		fmt.Println(string(buf))
 	}
 
 	if len(buf) == 0 {
@@ -133,10 +133,9 @@ func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]
 	var start int64
 	// skip first line for none first chunk
 	if offset != 0 {
-		var ch string
 		for start < int64(n) {
-			ch = string(buf[start])
-			if ch == "\n" {
+			ch := buf[start]
+			if ch == '\n' {
 				start++
 				break
 			}
@@ -171,7 +170,6 @@ func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]
 			// for loop to read chars to get a temperature, stop when meet '\n'
 			for start < int64(n) {
 				ch := buf[start]
-
 				if ch == '\n' {
 					// eol, need to calculate
 					tempString = sb.String()
@@ -211,7 +209,7 @@ func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]
 			}
 		}
 
-		if (isCity && start >= chunkSize) || start >= int64(n) {
+		if start >= int64(n) {
 			break
 		}
 	}
@@ -219,23 +217,18 @@ func parseFileAtOffset(file *os.File, offset int64, chunkSize int64) map[string]
 	return wsMap
 }
 
-func simpleProcess(file *os.File) {
+func simpleProcess(file *os.File) []string {
 	var (
 		err             error
 		str             []byte
 		weatherStations = make(map[string]WeatherStations)
 	)
-	start := time.Now()
 
 	reader := bufio.NewReader(file)
 
-	counts := 0
-
 	for err == nil {
 		str, _, err = reader.ReadLine()
-		// fmt.Println(string(str))
 		if strings.Contains(string(str), ";") {
-			counts++
 			v := strings.Split(string(str), ";")
 			city, temp := v[0], v[1]
 			tempFloat, err := strconv.ParseFloat(temp, 64)
@@ -293,5 +286,6 @@ func simpleProcess(file *os.File) {
 		}
 	}
 
-	fmt.Println(fmt.Sprintf("used: %v, counts: %v\n", time.Since(start).Seconds(), counts))
+	fmt.Println(fmt.Sprintf("counts: %v\n", len(keySlice)))
+	return keySlice
 }

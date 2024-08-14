@@ -48,3 +48,7 @@ out/
 out_expected.txt
 /*-timing.json
 /data/*
+
+/*.profile
+
+src/main/profile
