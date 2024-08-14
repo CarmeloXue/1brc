@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 type WeatherStations struct {
@@ -130,7 +132,7 @@ func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64)
 	if len(buf) == 0 {
 		return map[string]WeatherStations{}
 	}
-	var start int64
+	var start, end int64 // start and end determins a part of content to be parsed
 	// skip first line for none first chunk
 	if offset != 0 {
 		for start < int64(n) {
@@ -143,10 +145,11 @@ func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64)
 		}
 	}
 
+	end = start
+
 	var (
 		isCity     = true
 		wsMap      = make(map[string]WeatherStations)
-		sb         strings.Builder
 		cityName   string
 		tempString string
 	)
@@ -154,25 +157,23 @@ func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64)
 	for {
 		if isCity {
 			// for loop to read chars to get a city name, stop when meet ';' and set value flag
-			for start < int64(n) {
-				if buf[start] == ';' {
-					cityName = sb.String()
-					sb.Reset()
+			for end < int64(n) {
+				if buf[end] == ';' {
+					cityName = fastBytesToString(buf[start : end+1])
 					isCity = false
-					start++
+					end++
+					start = end
 					break
-				} else {
-					sb.WriteByte(buf[start])
 				}
-				start++
+				end++
 			}
 		} else {
 			// for loop to read chars to get a temperature, stop when meet '\n'
-			for start < int64(n) {
-				ch := buf[start]
+			for end < int64(n) {
+				ch := buf[end]
 				if ch == '\n' {
 					// eol, need to calculate
-					tempString = sb.String()
+					tempString = fastBytesToString(buf[start:end])
 					tempFloat, err := strconv.ParseFloat(tempString, 64)
 					if err != nil {
 						panic(err)
@@ -199,22 +200,31 @@ func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64)
 					cityName = ""
 					tempString = ""
 					isCity = true
-					sb.Reset()
-					start++
+					end++
+					start = end
 					break
-				} else {
-					sb.WriteByte(ch)
 				}
-				start++
+				end++
 			}
 		}
 
-		if start >= int64(n) {
+		if (isCity && start >= chunkSize) || end >= int64(n) {
 			break
 		}
 	}
 
 	return wsMap
+}
+
+func fastBytesToString(b []byte) string {
+	sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+
+	stringHeader := reflect.StringHeader{
+		Data: sliceHeader.Data,
+		Len:  sliceHeader.Len,
+	}
+
+	return *(*string)(unsafe.Pointer(&stringHeader))
 }
 
 func simpleProcess(file *os.File) []string {
