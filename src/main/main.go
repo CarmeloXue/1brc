@@ -121,6 +121,28 @@ func main() {
 		}
 	}
 
+	keySlice := make([]string, 0, len(wholeMap))
+	for city, _ := range wholeMap {
+		keySlice = append(keySlice, city)
+	}
+	var sb strings.Builder
+
+	sort.Strings(keySlice)
+	for idx, city := range keySlice {
+		sb.WriteString(city)
+		sb.WriteString("=")
+		sb.WriteString(fmt.Sprint(wholeMap[city].Min))
+		sb.WriteString("/")
+		sb.WriteString(fmt.Sprint(wholeMap[city].Avg))
+		sb.WriteString("/")
+		sb.WriteString(fmt.Sprint(wholeMap[city].Max))
+
+		if idx != len(wholeMap)-1 {
+			sb.WriteString(", ")
+		} else {
+			sb.WriteString("}")
+		}
+	}
 }
 
 func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64) map[string]WeatherStations {
@@ -149,7 +171,7 @@ func parseFileAtOffset(file *os.File, buf []byte, offset int64, chunkSize int64)
 
 	var (
 		isCity     = true
-		wsMap      = make(map[string]WeatherStations)
+		wsMap      = make(map[string]WeatherStations, 10000)
 		cityName   string
 		tempString string
 	)
